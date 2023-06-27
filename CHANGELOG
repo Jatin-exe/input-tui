@@ -1,0 +1,19 @@
+CHANGELOG
+
+the menu_getchar returns 1 if a char is recived 
+and is no longer just a void funciton
+
+
+
+TODO 
+
+getwindowsize and stuff 
+to get room for statujs bar and stuf f
+
+
+
+set the default limit to a box basiclay 
+
+
+
+take a look at other implementations of text fiel editor so it does look eentriiel baseed on kilo and stuff 
