@@ -24,9 +24,20 @@ typedef struct erow {
     char *render;       /* Row content "rendered" for screen (for TABs). */
 } erow;
 
-int editor_handler();
+uint8_t editor_handler();
 
+#define MAX_INPUT 20 // box width
 
+struct InputBox { 
+    int y;
+    int x;
+    char label[MAX_INPUT];
+    char input_buff[MAX_INPUT];
+    char saved_buff[MAX_INPUT];
+    int saved_sel; // 0 if cursor is on input; 1 if on SAVE button
+    int MAX_LEN;
+    struct editorConfig *E;
+};
 
 struct editorConfig {
     int cx,cy;  /* Cursor x and y position in characters */
@@ -39,6 +50,7 @@ struct editorConfig {
     int rawmode;    /* Is terminal raw mode enabled? */
     erow *row;      /* Rows */
     //status message here if needed
+    struct InputBox *input_box;
 
 };
 
@@ -60,16 +72,15 @@ enum KEY_ACTION{
         BACKSPACE =  127,   /* Backspace */
         /* The following are just soft codes, not really reported by the
          * terminal directly. */
-        ARROW_LEFT = 1000,
-        ARROW_RIGHT,
-        ARROW_UP,
-        ARROW_DOWN,
-        DEL_KEY,
+        ARROW_LEFT = 203,
+        ARROW_RIGHT = 202,
+        ARROW_UP = 200,
+        ARROW_DOWN = 201,
+        DEL_KEY = 126,
         HOME_KEY,
         END_KEY,
         PAGE_UP,
         PAGE_DOWN,
 
-        /*custom made*/
-        MOUSE_CLICK = 404
+        
 };

@@ -12,7 +12,6 @@
 #include <string.h>
 
 
-static struct editorConfig E;
 
 // #define ESC "\x1b" already definedin enums
 
@@ -22,16 +21,21 @@ static struct editorConfig E;
 
 
 
-static uint8_t (*menu_send)(char *buf, uint16_t len)  = cdc_send;
-static uint8_t (*menu_recv)(char *buf, uint16_t len) = cdc_recv;
-static uint8_t (*menu_putchar)(char) = cdc_putchar;
-static uint8_t (*menu_getchar)(char *) = cdc_getchar;
+static uint8_t (*menu_send)(uint8_t *buf, uint16_t len)  = cdc_send;
+static uint8_t (*menu_recv)(uint8_t *buf, uint16_t len) = cdc_recv;
+static uint8_t (*menu_putchar)(uint8_t) = cdc_putchar;
+static uint8_t (*menu_getchar)(uint8_t *) = cdc_getchar;
 
 
 
 // TRUNCATION IF I DONT CHANGE THIS TO INT 
 static uint8_t hide_cursor[6] = {"\x1b[?25l"}; 
 static uint8_t show_cursor[6] = {"\x1b[?25h"};
+
+static uint8_t save_cursor[3] = {"\x1b[s"};
+static uint8_t load_cursor[3] = {"\x1b[u"};
+
+
 
 static uint8_t seq_clear[8] = {"\x1b[2J\x1b[3J"}; //\033[K  \033[H
 static uint8_t seq_clear_2[4] = {"\x1b[H"};
@@ -58,7 +62,7 @@ void setbg() { menu_send(seq_bgcolor, LEN(seq_bgcolor)); }
   // send each digit of a 3 digit number as characters
 void put_int(uint_fast16_t i){
   // WORKS ONLY FOR THREE DIGIT NUMBER 
-  char no[3] = {};
+  char no[3] = {}; // turn this back to uint_8t if needed
   int x;
   int itr = 2;
   while(i!=0){
@@ -93,17 +97,7 @@ void move(uint_fast16_t y, uint_fast16_t x){
 
 
 
-#define MAX_INPUT 20 // box width
 
-struct InputBox { 
-    int y;
-    int x;
-    char label[MAX_INPUT];
-    char input_buff[MAX_INPUT];
-    char saved_field[MAX_INPUT];
-    int saved_sel; // 0 if cursor is on input; 1 if on SAVE button
-    int MAX_LEN;
-};
 
 // defined MAX_LEN for later use 
 
@@ -118,80 +112,58 @@ void moveR(char c, int n){
 
 
 
-
 /* Handle cursor position change because arrow keys were pressed. */
-void editorMoveCursor(int key) {
-    int filerow = E.rowoff+E.cy;
-    int filecol = E.coloff+E.cx;
+void editorMoveCursor(struct editorConfig * E, int key) {
+    int filerow = E->rowoff+E->cy;
+    int filecol = E->coloff+E->cx;
     int rowlen;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+    erow *row = (filerow >= E->numrows) ? NULL : &E->row[filerow];
 
     switch(key) {
     case ARROW_LEFT:
-        if (E.cx == 0) {
-            if (E.coloff) {
-                E.coloff--;
+        if (E->cx == 0) {
+            if (E->coloff) {
+                E->coloff--;
             } else {
                 if (filerow > 0) {
-                    E.cy--;
-                    E.cx = E.row[filerow-1].size;
-                    if (E.cx > E.screencols-1) {
-                        E.coloff = E.cx-E.screencols+1;
-                        E.cx = E.screencols-1;
+                    E->cy--;
+                    E->cx = E->row[filerow-1].size;
+                    if (E->cx > E->screencols-1) {
+                        E->coloff = E->cx-E->screencols+1;
+                        E->cx = E->screencols-1;
                     }
                 }
             }
         } else {
-            E.cx -= 1;
+            E->cx -= 1;
         }
         break;
     case ARROW_RIGHT:
         if (row && filecol < row->size) {
-            if (E.cx == E.screencols-1) {
-                E.coloff++;
+            if (E->cx == E->screencols-1) {
+                E->coloff++;
             } else {
-                E.cx += 1;
-            }
-        } else if (row && filecol == row->size) {
-            E.cx = 0;
-            E.coloff = 0;
-            if (E.cy == E.screenrows-1) {
-                E.rowoff++;
-            } else {
-                E.cy += 1;
+                E->cx += 1;
             }
         }
+
+
         break;
-    case ARROW_UP:
-        if (E.cy == 0) {
-            if (E.rowoff) E.rowoff--;
-        } else {
-            E.cy -= 1;
-        }
-        break;
-    case ARROW_DOWN:
-        if (filerow < E.numrows) {
-            if (E.cy == E.screenrows-1) {
-                E.rowoff++;
-            } else {
-                E.cy += 1;
-            }
-        }
-        break;
+
     }
 
 
 
     /* Fix cx if the current line has not enough chars. */
-    filerow = E.rowoff+E.cy;
-    filecol = E.coloff+E.cx;
-    row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+    filerow = E->rowoff+E->cy;
+    filecol = E->coloff+E->cx;
+    row = (filerow >= E->numrows) ? NULL : &E->row[filerow];
     rowlen = row ? row->size : 0;
     if (filecol > rowlen) {
-        E.cx -= filecol-rowlen;
-        if (E.cx < 0) {
-            E.coloff += E.cx;
-            E.cx = 0;
+        E->cx -= filecol-rowlen;
+        if (E->cx < 0) {
+            E->coloff += E->cx;
+            E->cx = 0;
         }
     }
 }
@@ -200,14 +172,16 @@ void editorMoveCursor(int key) {
 
 /* This function writes the whole screen using VT100 escape characters
  * starting from the logical state of the editor in the global state 'E'. */
-void editorRefreshScreen(struct InputBox * input_box) {
+void editorRefreshScreen(struct editorConfig * E,struct InputBox * input_box) {
     int y;
     erow *r;
     char buf[32];
     // struct abuf ab = ABUF_INIT;
 
+    menu_send(hide_cursor,LEN(hide_cursor));
 
-    move(E.y_pos, E.x_pos);
+
+    move(E->y_pos, E->x_pos);
     
     // abAppend(&ab,"\x1b[10;11H",8); // does nto clear screen same as ctrl + l ig
     // line are at 10;10 so text form colum 11 just use varibes and add one here bro 
@@ -225,18 +199,25 @@ void editorRefreshScreen(struct InputBox * input_box) {
 
             // maybe implement somethign here ? footer 
             //
-        move(E.y_pos, E.x_pos); // move cursor to the current position
-        menu_send("\x1b[0K",4); // method to not have to calculte is better change menu_send
 
-        r = &E.row[E.rowoff];
+        // menu_send("\x1b[0K",4); // method to not have to calculte is better change menu_send
 
-        int len = r->rsize - E.coloff;
+        for(int i =0;i< MAX_INPUT; i++){ // or inputBox->MAX_LEN
+            menu_send(" ", 1);
+        }
+        moveR('D',MAX_INPUT);
+
+
+
+        r = &E->row[E->rowoff];
+
+        int len = r->rsize - E->coloff;
 
         char buff[len+len];
         if (len > 0) {
-            if (len > E.screencols) len = E.screencols; // we gotta render what we can show so 
+            if (len > E->screencols) len = E->screencols; // we gotta render what we can show so 
 
-            char *c = r->render+E.coloff;  // usually zero if the line is not too big?
+            char *c = r->render+E->coloff;  // usually zero if the line is not too big?
 
 
             for (int j =0 ;j<len ;j++){                
@@ -244,28 +225,7 @@ void editorRefreshScreen(struct InputBox * input_box) {
                 buff[j] = (char)*(c+j);
             }
         }
-
-        menu_send(buff, strlen(buff)); // strlen instead of LEN
-
-        menu_send("\x1b[s", 3); // saves current curosr pos in DEC
-
-        // move(E.y_pos, E.x_pos); // move cursor to the current position
-        // menu_send("\x1b[0K",4); // method to not have to calculte is better change menu_send
-        // move the print the | at end of the line
-
-
-
-
-
-
-        // co pilot ? here ? 
-        // abAppend(&ab,"\r\n",2);
-
-
-        // padding of padd variabl eto keep it inside the box
-        // abAppend(&ab, "\x1b[10C", 5); // 10 is E.x_pos which is the distance from left ot the box
-        
-    
+        menu_send(buff, len); // strlen instead of LEN
 
     /* Put cursor at its current position. Note that the horizontal position
      * at which the cursor is displayed may be different compared to 'E.cx'
@@ -273,10 +233,10 @@ void editorRefreshScreen(struct InputBox * input_box) {
 
     int j;
     int cx = 1;
-    int filerow = E.rowoff+E.cy;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+    int filerow = E->rowoff+E->cy;
+    erow *row = (filerow >= E->numrows) ? NULL : &E->row[filerow];
     if (row) {
-        for (j = E.coloff; j < (E.cx+E.coloff); j++) {
+        for (j = E->coloff; j < (E->cx+E->coloff); j++) {
             if (j < row->size && row->chars[j] == TAB) cx += 7-((cx)%8);
             cx++;
         }
@@ -287,18 +247,16 @@ void editorRefreshScreen(struct InputBox * input_box) {
 
 
 
-    move(E.y_pos,E.x_pos + cx-1); // move cursor to the current position
+    move(E->y_pos,E->x_pos + cx-1); // move cursor to the current position
     menu_send("\x1b[?25h",6); /* Show cursor. */
 
-    // menu_send(ab.b,ab.len
-    // abFree(&ab);
+    menu_send(show_cursor,LEN(show_cursor));
 }
 
 /* Read a key from the terminal put in raw mode, trying to handle
  * escape sequences. */
-int parse_input(int c) {
-    int nread;
-    char seq[3];
+uint8_t parse_input(uint8_t c) {
+    uint8_t seq[3];
 
 
     while(1) {
@@ -319,10 +277,7 @@ int parse_input(int c) {
                     if (seq[2] == '~') {
                         return DEL_KEY;
                     }
-                } else if (seq[1]=='<'){ // ESC[<0;x;y
-                    return MOUSE_CLICK;
-
-                } 
+                }
                 else {
                     switch(seq[1]) {
                     case 'A': return ARROW_UP;
@@ -339,6 +294,40 @@ int parse_input(int c) {
             return c;
         }
     }
+}
+
+/* Update the rendered version of the row. */
+void editorUpdateRow(erow *row) {
+    unsigned int tabs = 0, nonprint = 0;
+    int j, idx;
+
+   /* Create a version of the row we can directly print on the screen,
+     * respecting tabs, substituting non printable characters with '?'. */
+    free(row->render);
+    for (j = 0; j < row->size; j++)
+        if (row->chars[j] == TAB) tabs++;
+
+    unsigned long long allocsize =
+        (unsigned long long) row->size + tabs*8 + nonprint*9 + 1;
+    if (allocsize > UINT32_MAX) {
+        printf("Some line of the edited file is too long\n");
+        exit(1);
+    }
+
+    row->render = malloc(row->size + tabs*8 + nonprint*9 + 1);
+    idx = 0;
+    for (j = 0; j < row->size; j++) {
+        if (row->chars[j] == TAB) {
+            row->render[idx++] = ' ';
+            while((idx+1) % 8 != 0) row->render[idx++] = ' ';
+        } else {
+            row->render[idx++] = row->chars[j];
+        }
+    }
+    row->rsize = idx;
+    row->render[idx] = '\0';
+
+
 }
 
 
@@ -370,41 +359,56 @@ void editorRowInsertChar(erow *row, int at, int c) {
 
 /* Insert a row at the specified position, shifting the other rows on the bottom
  * if required. */
-void editorInsertRow(int at, char *s, size_t len) {
-    if (at > E.numrows) return;
-    E.row = realloc(E.row,sizeof(erow)*(E.numrows+1));
-    if (at != E.numrows) {
-        memmove(E.row+at+1,E.row+at,sizeof(E.row[0])*(E.numrows-at));
-        for (int j = at+1; j <= E.numrows; j++) E.row[j].idx++;
+void editorInsertRow(struct editorConfig * E, int at, char *s, size_t len) {
+    if (at > E->numrows){  printf("return ");fflush(0);return;}
+
+    
+    E->row = realloc(E->row,sizeof(erow)*(E->numrows+1));
+
+
+    if (at != E->numrows) {
+        memmove(E->row+at+1,E->row+at,sizeof(E->row[0])*(E->numrows-at));
+        for (int j = at+1; j <= E->numrows; j++) E->row[j].idx++;
     }
-    E.row[at].size = len;
-    E.row[at].chars = malloc(len+1);
-    memcpy(E.row[at].chars,s,len+1);
-    E.row[at].render = NULL;
-    E.row[at].rsize = 0;
-    E.row[at].idx = at;
-    editorUpdateRow(E.row+at);
-    E.numrows++;
+
+
+
+    E->row[at].size = len;
+    E->row[at].chars = malloc(len+1);
+    memcpy(E->row[at].chars,s,len+1);
+    E->row[at].render = NULL;
+    E->row[at].rsize = 0;
+    E->row[at].idx = at;
+    editorUpdateRow(E->row+at);
+    E->numrows++;
 }
 
 /* Insert the specified char at the current prompt position. */
-void editorInsertChar(int c) {
-    int filerow = E.rowoff+E.cy;
-    int filecol = E.coloff+E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+void editorInsertChar(struct editorConfig * E, int c) {
+
+
+
+    int filerow = E->cy;
+
+    int filecol = E->coloff+E->cx;
+        erow *row = &E->row[filerow];
+
 
     /* If the row where the cursor is currently located does not exist in our
      * logical representaion of the file, add enough empty rows as needed. */
+
     if (!row) {
-        while(E.numrows <= filerow)
-            editorInsertRow(E.numrows,"",0);
+        while(E->numrows <= filerow){
+            editorInsertRow(E, E->numrows,"",0);
+        }
     }
-    row = &E.row[filerow];
+    row = &E->row[filerow];
+
     editorRowInsertChar(row,filecol,c);
-    if (E.cx == E.screencols-1)
-        E.coloff++;
+    if (E->cx == E->screencols-1)
+        E->coloff++;
     else
-        E.cx++;
+        E->cx++;
 }
 
 
@@ -414,50 +418,10 @@ void editorFreeRow(erow *row) {
     free(row->chars);
 }
 
-/* Update the rendered version and the syntax highlight of a row. */
-void editorUpdateRow(erow *row) {
-    unsigned int tabs = 0, nonprint = 0;
-    int j, idx;
-
-   /* Create a version of the row we can directly print on the screen,
-     * respecting tabs, substituting non printable characters with '?'. */
-    free(row->render);
-    for (j = 0; j < row->size; j++)
-        if (row->chars[j] == TAB) tabs++;
-
-    unsigned long long allocsize =
-        (unsigned long long) row->size + tabs*8 + nonprint*9 + 1;
-    if (allocsize > UINT32_MAX) {
-        printf("Some line of the edited file is too long for kilo\n");
-        exit(1);
-    }
-
-    row->render = malloc(row->size + tabs*8 + nonprint*9 + 1);
-    idx = 0;
-    for (j = 0; j < row->size; j++) {
-        if (row->chars[j] == TAB) {
-            row->render[idx++] = ' ';
-            while((idx+1) % 8 != 0) row->render[idx++] = ' ';
-        } else {
-            row->render[idx++] = row->chars[j];
-        }
-    }
-    row->rsize = idx;
-    row->render[idx] = '\0';
 
 
-}
 
 
-/* Append the string 's' at the end of a row */
-void editorRowAppendString(erow *row, char *s, size_t len) {
-    row->chars = realloc(row->chars,row->size+len+1);
-    memcpy(row->chars+row->size,s,len);
-    row->size += len;
-    row->chars[row->size] = '\0';
-    editorUpdateRow(row);
-
-}
 
 /* Delete the character at offset 'at' from the specified row. */
 void editorRowDelChar(erow *row, int at) {
@@ -468,64 +432,37 @@ void editorRowDelChar(erow *row, int at) {
 
 }
 
-/* Remove the row at the specified position, shifting the remainign on the
- * top. */
-void editorDelRow(int at) {
-    erow *row;
-
-    if (at >= E.numrows) return;
-    row = E.row+at;
-    editorFreeRow(row);
-    memmove(E.row+at,E.row+at+1,sizeof(E.row[0])*(E.numrows-at-1));
-    for (int j = at; j < E.numrows-1; j++) E.row[j].idx++;
-    E.numrows--;
-
-}
-
-
-
-
 /* Delete the char at the current prompt position. */
-void editorDelChar() {
-    int filerow = E.rowoff+E.cy;
-    int filecol = E.coloff+E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+void editorDelChar(struct editorConfig * E) {
+    int filerow = E->cy;
+    int filecol = E->coloff+E->cx;
+    erow *row =  &(E->row[filerow]);
 
     if (!row || (filecol == 0 && filerow == 0)) return;
-    if (filecol == 0) {
-        /* Handle the case of column 0, we need to move the current line
-         * on the right of the previous one. */
-        filecol = E.row[filerow-1].size;
-        editorRowAppendString(&E.row[filerow-1],row->chars,row->size);
-        editorDelRow(filerow);
-        row = NULL;
-        if (E.cy == 0)
-            E.rowoff--;
-        else
-            E.cy--;
-        E.cx = filecol;
-        if (E.cx >= E.screencols) {
-            int shift = (E.screencols-E.cx)+1;
-            E.cx -= shift;
-            E.coloff += shift;
-        }
-    } else {
-        editorRowDelChar(row,filecol-1);
-        if (E.cx == 0 && E.coloff)
-            E.coloff--;
-        else
-            E.cx--;
-    }
+    
+    editorRowDelChar(row,filecol-1);
+
+    if (E->cx == 0 && E->coloff)
+        E->coloff--;
+    else
+        E->cx--;
+        
+
+    // ^^ POSSILBE ERROS HERE FOR NOT RENDERING PROPERLY
+    
     if (row) editorUpdateRow(row);
 }
 
 
 /* Process events arriving from the standard input, which is, the user
  * is typing stuff on the terminal. */
-void input_handler(int fd) {
+
+struct InputBox * sel_ptr = NULL;
+
+void input_handler(struct editorConfig *E, int fd) {
 
 
-    int c = 0; // THIS SHOULDL BE CHAR FIX !!
+    uint8_t c = 0; // THIS SHOULDL BE CHAR FIX !!
 
     while(c==0)
         menu_getchar(&c); // breaks only if we get a  input ?   --- possible errors ? bugs cuz handling only for chars idk
@@ -534,27 +471,37 @@ void input_handler(int fd) {
 
     switch(c) {
     case ENTER:         /* Enter */
+        strcpy(sel_ptr->saved_buff, sel_ptr->input_buff);
+        
+
         break;
 
     case BACKSPACE:     /* Backspace */
     case DEL_KEY:
-        editorDelChar();
+        editorDelChar(E);
         break;
 
     case ARROW_UP:
     case ARROW_DOWN:
-        // change selection input to button and back/cancel
+    // sigterm if no input has been writeten  
+        // change selection input to ubtton and back/cancel
+        printf("wath");fflush(0);
 
+        if (sel_ptr->saved_sel == 0) {
+            sel_ptr->saved_sel = 1;
+        } else {
+            sel_ptr->saved_sel = 0;
+        }
         break;
 
     case ARROW_LEFT:
     case ARROW_RIGHT:
 
-        editorMoveCursor(c);
+        editorMoveCursor(E, c);
         break;
     default:
         
-        editorInsertChar(c);
+        editorInsertChar(E, c);
         break;
     }
 
@@ -565,7 +512,7 @@ void input_handler(int fd) {
 
 void setForegroundColor(int color) {
 
-    char buf[20];
+    uint8_t buf[20];
     sprintf(buf,"%s[38;5;%dm", "\x1b", color);
 
     menu_send(buf, strlen(buf));
@@ -573,14 +520,14 @@ void setForegroundColor(int color) {
 }
 
 void setBackgroundColor(int color) {
-    char buf[20];
+    uint8_t buf[20];
     sprintf(buf,"%s[48;5;%dm", "\x1b", color);
     menu_send(buf, strlen(buf));
 
 }
 
 void resetColors() {
-    char buf[20];
+    uint8_t buf[20];
     sprintf(buf,"%s[0m", "\x1b");
     menu_send(buf, strlen(buf));
 }
@@ -589,7 +536,7 @@ void drawButton(int x, int y, int width, char* label) {
     // setCursorPosition(x,y ); // specifc and standaride weather we are using   x and y or y and x as representd in lines and colum
     // setForegroundColor(0);      // Set text color to black
     setBackgroundColor(15);    // Set background color to whites
-    char buf[20];
+    uint8_t buf[20];
     sprintf(buf," %-*s ", width-2, label);
 
     menu_send(buf,strlen(buf));
@@ -609,20 +556,20 @@ void redraw()
 }
 
 
-void initEditor(int y, int x, int height, int width) {
+void initEditor(struct editorConfig *E, int y, int x, int height, int width) {
     
-    E.cx = 0;
-    E.cy = 0;
-    E.rowoff = 0;
-    E.coloff = 0;
-    E.numrows = 0;
-    E.row = NULL;
+    E->cx = 0;
+    E->cy = 0;
+    E->rowoff = 0;
+    E->coloff = 0;
+    E->numrows = 0;
+    E->row = NULL;
 
-    E.y_pos = y;
-    E.x_pos = x;
+    E->y_pos = y;
+    E->x_pos = x;
 
-    E.screenrows = height;
-    E.screencols = width;
+    E->screenrows = height;
+    E->screencols = width;
 }
 
 /*
@@ -634,7 +581,8 @@ void initEditor(int y, int x, int height, int width) {
 // works for one row input boxes only
 void drawInputBox(struct InputBox * input_box){ 
 
-
+    menu_send(save_cursor, LEN(save_cursor));
+    
     menu_send(hide_cursor, LEN(hide_cursor));
 
     move(input_box->y, input_box->x);
@@ -671,9 +619,10 @@ void drawInputBox(struct InputBox * input_box){
     moveR('D',1);
     // menu_putchar('+');
     sprintf(ss,"╝");
+    menu_send(ss,strlen(ss));
     // menu_putchar('=');
 
-    moveR('D',MAX_INPUT+1);
+    moveR('D',MAX_INPUT+2);
 
     // menu_putchar('+');
     sprintf(ss,"╚");
@@ -689,6 +638,8 @@ void drawInputBox(struct InputBox * input_box){
 
 
     // text  and save button
+
+    menu_send(load_cursor, LEN(load_cursor));
     menu_send(show_cursor, LEN(show_cursor));
 }
 
@@ -702,7 +653,7 @@ void drawInputBox(struct InputBox * input_box){
 */
 
 
-int editor_handler(){
+uint8_t editor_handler(){
 
     // x,y pos of the box, height and width of the box /home/jatinexe/bi0s/tui-menu/text_editor/editor.c
 
@@ -731,13 +682,21 @@ int editor_handler(){
 
     struct InputBox *team_name  = &team_var;
 
+    sel_ptr = team_name;
+
     team_name->MAX_LEN = MAX_INPUT;
+
+
+
+
+    struct editorConfig E;
+
 
     // array sizes are based on macro define 
     // anoter memeber input_sized req
 
 
-    initEditor(team_name->y,team_name->x + strlen(team_name->label) + 1  ,1,MAX_INPUT); // 32 lines as length and 100 colums as width of editor
+    initEditor(&E, team_name->y,team_name->x + strlen(team_name->label) + 1  ,1,MAX_INPUT); 
     drawInputBox(team_name);
     // drawEditor();
     /*
@@ -752,18 +711,16 @@ int editor_handler(){
                 save button as color
         print the saved_buffer value
         */
-    // menu_send("\x1b[1000h\x1b[?1006h",16); // enable mouse tracking
+    move(E.y_pos, E.x_pos); // initial cursor placement
 
     while (1){
-         input_handler(serial_port);// o for std input
-        drawInputBox(team_name);
-        editorRefreshScreen(team_name); // refresh struct / input box
-        // menu_send("\x1b[u", 3);
+        // drawInputBox(team_name); no need since we are not erasing that 
+         input_handler(&E, serial_port);// o for std input
+        editorRefreshScreen(&E, team_name); // refresh struct / input box
         // drawEditor();
         redraw();
     }
 
-    // menu_send("\x1b[?1000l\x1b[?1006l",16); // enable mouse tracking
     
     return 0; 
 }
@@ -773,3 +730,9 @@ int editor_handler(){
 
 
 
+/*
+make sure all pointers are being freed
+flickering of text
+responsiveness
+
+*/
