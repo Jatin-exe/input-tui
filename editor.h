@@ -15,44 +15,25 @@ void HAL_Delay(uint32_t delay);
 #define BI0S "bi0sHardware" // tagline - footer
 
 
-/* This structure represents a single line of the file we are editing. */
-typedef struct erow {
-    int idx;            /* Row index in the file, zero-based. */
-    int size;           /* Size of the row, excluding the null term. */
-    int rsize;          /* Size of the rendered row. */
-    char *chars;        /* Row content. */
-    char *render;       /* Row content "rendered" for screen (for TABs). */
-} erow;
+
 
 uint8_t editor_handler();
 
 #define MAX_INPUT 20 // box width
 
 struct InputBox { 
-    int y;
-    int x;
-    char label[MAX_INPUT];
-    char input_buff[MAX_INPUT];
-    char saved_buff[MAX_INPUT];
-    int saved_sel; // 0 if cursor is on input; 1 if on SAVE button
-    int MAX_LEN;
-    struct editorConfig *E;
+    int y, x; /* x and y pos of the input box top left point*/
+    int cx;  /* Cursor x position in the input buffer */
+    char label[MAX_INPUT]; /* name of the label field*/
+    char saved_buff[MAX_INPUT]; /* var for the saved buffer */
+    int saved_sel; /* 0 if cursor is on input; 1 if on SAVE button */
+    int MAX_LEN; /* max length of the input buffer */
+    int buff_size; /*size of the current input*/ // including null term for now
+
+    char * input_buff; /* input_buff to show in the term*/
 };
 
-struct editorConfig {
-    int cx,cy;  /* Cursor x and y position in characters */
-    int x_pos, y_pos ;  /* The x and y position from where the editor box starts*/
-    int rowoff;     /* Offset of row displayed. */
-    int coloff;     /* Offset of column displayed. */
-    int screenrows; /* Number of rows that we can show */
-    int screencols; /* Number of cols that we can show */
-    int numrows;    /* Number of rows */
-    int rawmode;    /* Is terminal raw mode enabled? */
-    erow *row;      /* Rows */
-    //status message here if needed
-    struct InputBox *input_box;
 
-};
 
 
 /* Mappigns of Keys and their codes*/

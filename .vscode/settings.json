@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "array": "c",
+        "string_view": "c",
+        "hash_map": "c",
+        "format": "c",
+        "initializer_list": "c",
+        "span": "c"
+    }
+}
